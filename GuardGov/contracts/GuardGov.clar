@@ -270,4 +270,73 @@
     )
 )
 
+;; @desc Finalizes a proposal, applies timelock checks, and executes if passed
+;; @param proposal-id The ID of the proposal to execute
+;; @returns (response bool uint)
+;;
+;; This function handles the lifecycle conclusion of a governance proposal.
+;; It verifies that the voting period has concluded, ensures the
+;; timelock delay has elapsed (to allow users to react to the outcome),
+;; checks if the quorum requirement was met, and validates the vote count.
+;; If all checks pass, it transitions the proposal status to executed.
+;; It is designed to be called by any user once the execution criteria are met,
+;; acting as an automated trigger for DAO operations.
+(define-public (execute-proposal (proposal-id uint))
+    (let
+        (
+            (proposal (try! (get-proposal proposal-id)))
+            (current-block block-height)
+            (total-votes (+ (get for-votes proposal) (get against-votes proposal)))
+            (is-passed (> (get for-votes proposal) (get against-votes proposal)))
+            (quorum-met (>= total-votes quorum-threshold))
+        )
+        ;; Check 1: Ensure the proposal is still in an active or pending state.
+        ;; Once a proposal is executed or rejected, it should not be processed again.
+        (asserts! (is-eq (get status proposal) status-active) err-already-executed)
+
+        ;; Check 2: Ensure the voting period has officially closed.
+        ;; No execution can happen while voting is still active.
+        (asserts! (> current-block (get end-block proposal)) err-voting-active)
+
+        ;; Check 3: Ensure the mandatory timelock delay has expired.
+        ;; This protects the DAO against malicious proposals being executed instantly,
+        ;; giving innocent users a window to exit the system if a hostile takeover occurs.
+        (asserts! (>= current-block (get execution-block proposal)) err-timelock-active)
+
+        ;; Determine final status based on quorum and vote majority
+        (if (and quorum-met is-passed)
+            (begin
+                ;; Proposal passed and meets quorum requirements.
+                ;; Transition the proposal to the executed status.
+                (map-set proposals proposal-id (merge proposal { status: status-executed }))
+                
+                ;; <Insert custom logic to execute the DAO action here>
+                ;; Example operations:
+                ;; - Transferring funds from the DAO treasury
+                ;; - Updating protocol configuration parameters
+                ;; - Minting or burning governance tokens
+                
+                ;; Emit successful execution event for indexers
+                (print { event: "proposal-executed", proposal-id: proposal-id })
+                (ok true)
+            )
+            (begin
+                ;; Proposal failed either due to low votes or missing quorum.
+                ;; Update status to rejected and halt execution logic.
+                (map-set proposals proposal-id (merge proposal { 
+                    status: (if quorum-met status-rejected status-pending) 
+                }))
+                
+                ;; Emit failure event with the specific reason for transparency
+                (print { 
+                    event: "proposal-failed", 
+                    proposal-id: proposal-id, 
+                    reason: (if quorum-met "rejected-by-votes" "quorum-not-met") 
+                })
+                err-quorum-not-reached
+            )
+        )
+    )
+)
+
 
